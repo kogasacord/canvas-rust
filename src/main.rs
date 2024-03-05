@@ -1,7 +1,7 @@
-use std::{path::Path, cmp};
+use std::{path::Path, cmp, collections::HashMap};
 
 use actix_web::{get, post, App, HttpResponse, HttpServer, Responder};
-use ril::{Image, Paste, TextAlign, Font, TextLayout, WrapStyle, TextSegment, Rgba, ResizeAlgorithm, OverlayMode, Rgb};
+use ril::{Image, Paste, TextAlign, Font, TextLayout, WrapStyle, TextSegment, Rgba, ResizeAlgorithm, OverlayMode};
 
 #[get("/ping")]
 async fn hello() -> impl Responder {
@@ -16,26 +16,10 @@ async fn echo(req_body: String) -> impl Responder {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let mut quote = Quote::new("./media/images/overlay_gradient.png", "./media/images/profile.png").unwrap();
-    match create_quote(&mut quote, "hiiii", "alice") {
-        Ok(_) => {
-            Ok(())
-            /*
-            HttpServer::new(|| {
-                App::new()
-                    .service(hello)
-                    .service(echo)
-            })
-            .bind(("127.0.0.1", 8080))?
-            .run()
-            .await
-            */
-        },
-        Err(err) => {
-            panic!("{}", err);
-        },
-    }
-    
+    let (pieces, board) = load_piece_board_images().unwrap();
+    fen_to_board_img("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1", "./test.png", 4, &pieces, &board);
+
+    Ok(())
 }
 
 /**
@@ -71,6 +55,12 @@ impl Quote {
             pfp, 
             font 
         })
+    }
+    fn replace_pfp(&mut self) {
+        // TODO: use actix-web client to get the image from the url
+        //      that will be passed to you by the caller
+        //      and convert that into bytes.
+        let pfp = Image::<Rgba>::from_bytes_inferred(bytes);
     }
     fn combine_pfp_and_gradient(&mut self) {
         self.image.draw(&Paste::new(&self.pfp)
@@ -120,76 +110,73 @@ fn create_quote(quote: &mut Quote, text: &str, author: &str) -> ril::Result<Vec<
     // image.encode(ImageFormat::Png, &mut bytes).unwrap();
     Ok(bytes)
 }
-fn load_piece_board_images() -> ril::Result<(HashMap<char, PalettedRgba<'static>>, HashMap<char, PalettedRgba<'static>>)> {
-    let piece_images: HashMap<char, PalettedRgba> = [
+fn load_piece_board_images() -> ril::Result<(HashMap<char, Image<Rgba>>, Image<Rgba>)> {
+    let piece_images: HashMap<char, Image<Rgba>> = [
         // Black Pieces
         (
             'p',
-            Image::<Rgba>::open(Path::new("./media/images/overlay_gradient.png"))?,
+            Image::<Rgba>::open(Path::new("./media/chess_assets/pieces/black_pawn.png"))?,
 
         ),
         (
             'r',
-            Image::<Rgba>::open(Path::new("./media/images/overlay_gradient.png"))?,
+            Image::<Rgba>::open(Path::new("./media/chess_assets/pieces/black_rook.png"))?,
 
         ),
         (
             'n',
-            Image::<Rgba>::open(Path::new("./media/images/overlay_gradient.png"))?,
+            Image::<Rgba>::open(Path::new("./media/chess_assets/pieces/black_knight.png"))?,
 
         ),
         (
             'b',
-            Image::<Rgba>::open(Path::new("./media/images/overlay_gradient.png"))?,
+            Image::<Rgba>::open(Path::new("./media/chess_assets/pieces/black_bishop.png"))?,
 
         ),
         (
             'q',
-            Image::<Rgba>::open(Path::new("./media/images/overlay_gradient.png"))?,
+            Image::<Rgba>::open(Path::new("./media/chess_assets/pieces/black_queen.png"))?,
         ),
         (
             'k',
-            Image::<Rgba>::open(Path::new("./media/images/overlay_gradient.png"))?,
+            Image::<Rgba>::open(Path::new("./media/chess_assets/pieces/black_king.png"))?,
 
         ),
         // White Pieces
         (
             'P',
-            Image::<Rgba>::open(Path::new("./media/images/overlay_gradient.png"))?,
+            Image::<Rgba>::open(Path::new("./media/chess_assets/pieces/white_pawn.png"))?,
         ),
         (
             'R',
-            Image::<Rgba>::open(Path::new("./media/images/overlay_gradient.png"))?,
+            Image::<Rgba>::open(Path::new("./media/chess_assets/pieces/white_rook.png"))?,
         ),
         (
             'N',
-            Image::<Rgba>::open(Path::new("./media/images/overlay_gradient.png"))?,
+            Image::<Rgba>::open(Path::new("./media/chess_assets/pieces/white_knight.png"))?,
         ),
         (
             'B',
-            Image::<Rgba>::open(Path::new("./media/images/overlay_gradient.png"))?,
+            Image::<Rgba>::open(Path::new("./media/chess_assets/pieces/white_bishop.png"))?,
         ),
         (
             'Q',
-            Image::<Rgba>::open(Path::new("./media/images/overlay_gradient.png"))?,
+            Image::<Rgba>::open(Path::new("./media/chess_assets/pieces/white_queen.png"))?,
         ),
         (
             'K',
-            Image::<Rgba>::open(Path::new("./media/images/overlay_gradient.png"))?,
+            Image::<Rgba>::open(Path::new("./media/chess_assets/pieces/white_king.png"))?,
         ),
     ]
     .iter()
     .cloned()
     .collect();
 
-    let board_image =             Image::<Rgba>::open(Path::new("./media/images/overlay_gradient.png"))?;
+    let board_image = Image::<Rgba>::open(Path::new("./media/chess_assets/board/board.png"))?;
+    Ok((piece_images, board_image))
 }
 
-
-
-
-
-fn fen_to_board_img(fen: &str, save_dir: &str, upscale_multiplier: u32, piece_images: &HashMap<char, RgbaImage>, board_image: &RgbaImage) {
+fn fen_to_board_img(fen: &str, save_dir: &str, upscale_multiplier: u32, piece_images: &HashMap<char, Image<Rgba>>, board_image: &Image<Rgba>) {
     let board = fen.split_whitespace().next().unwrap();
     let mut img = board_image.clone();
     let square_size = (img.width() - 8) / 8; 
@@ -209,21 +196,21 @@ fn fen_to_board_img(fen: &str, save_dir: &str, upscale_multiplier: u32, piece_im
             continue;
         }
         if let Some(piece_image) = piece_images.get(&char) {
-            overlay(
-                &mut img,
-                piece_image,
-                (x * square_size + offset + border_size) as i64,
-                (y * square_size + offset + border_size) as i64,
-            );
+            let offsetted_x = (x * square_size + offset + border_size) as u32;
+            let offsetted_y = (y * square_size + offset + border_size) as u32;
+            
+            img.draw(&Paste::new(piece_image)
+                       .with_overlay_mode(OverlayMode::Merge)
+                       .with_position(offsetted_x, offsetted_y));
         }
         x += 1;
     }
 
-    let new_width = img.width() * upscale_multiplier;
+
+    let aspect_ratio = img.width() as f32 / img.height() as f32;
     let new_height = img.height() * upscale_multiplier;
-    let upscale_filter = image::imageops::FilterType::Nearest;
+    let new_width = (new_height as f32 * aspect_ratio).round() as u32;
+    img.resize(new_width, new_height, ResizeAlgorithm::Nearest);
 
-    let upscaled_img = image::imageops::resize(&img, new_width, new_height, upscale_filter);
-
-    upscaled_img.save(save_dir).unwrap();
+    img.save_inferred(save_dir).unwrap();
 }
