@@ -117,7 +117,7 @@ fn create_quote(quote: &mut Quote, text: &str, author: &str) -> ril::Result<Vec<
     quote.get_underlying_image().draw(&text_layout);
     quote.get_underlying_image().draw(&author_layout);
 
-    quote.get_underlying_image().save_inferred("bruhhh.png")?;
+    quote.get_underlying_image().save_inferred("test.png")?;
     // image.encode(ImageFormat::Png, &mut bytes).unwrap();
     Ok(bytes)
 }
