@@ -1,7 +1,7 @@
-use std::{path::Path, cmp, collections::HashMap, sync::{Arc, Mutex, RwLock}, f32::consts::E};
+use std::{path::Path, cmp, collections::HashMap, sync::{Arc, Mutex, RwLock}, sync::mpsc};
 
 use awc::Client;
-use actix_web::{get, post, App, HttpResponse, HttpServer, Responder, web::{self, Bytes}, middleware, http::header::AcceptEncoding};
+use actix_web::{get, post, App, HttpResponse, HttpServer, Responder, web::{self, Bytes}, middleware, http::header::AcceptEncoding, Error};
 use ril::{Image, Paste, TextAlign, Font, TextLayout, WrapStyle, TextSegment, Rgba, ResizeAlgorithm, OverlayMode, ImageFormat};
 use serde::{Serialize, Deserialize};
 
@@ -49,7 +49,6 @@ async fn quote_fn(data: web::Data<Arc<AppState>>, req_body: web::Json<QuoteFnPar
     match create_quote(&mut quote, &req_body.text, &req_body.author) {
         Ok(img) => {
             HttpResponse::Ok()
-                .insert_header(AcceptEncoding(vec!["gzip".parse().unwrap()]))
                 .body(img)
         },
         Err(err) => {
@@ -84,18 +83,15 @@ async fn main() -> std::io::Result<()> {
     let state = web::Data::new(Arc::new(AppState { quote, chess_assets }));
     HttpServer::new(move || {
         App::new()
-            .wrap(middleware::Compress::default())
             .service(quote_fn)
             .service(chess_fn)
             .service(echo)
             .app_data(state.clone())
     })
     .bind(("127.0.0.1", 8080))?
+    .workers(4)
     .run()
     .await?;
-
-    // let (pieces, board) = load_piece_board_images().unwrap();
-    // fen_to_board_img("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1", "./test.png", 4, &pieces, &board);
 
     Ok(())
 }
@@ -161,7 +157,8 @@ fn create_quote(quote: &mut Quote, text: &str, author: &str) -> ril::Result<Vec<
     let mut bytes = Vec::new();
     let estimated_font_size = font_size_estimate(text);
 
-    let font = Font::open("./media/fonts/playfair.ttf", 48.0)?;
+    let font = quote.font.clone();
+
     let (x, y) = quote.get_underlying_image().center();
     let text_layout = TextLayout::<Rgba>::new()
         .centered()
@@ -189,8 +186,11 @@ fn create_quote(quote: &mut Quote, text: &str, author: &str) -> ril::Result<Vec<
     quote.get_underlying_image().draw(&text_layout);
     quote.get_underlying_image().draw(&author_layout);
 
-    quote.get_underlying_image().encode(ImageFormat::Png, &mut bytes).unwrap();
-    quote.get_underlying_image().save_inferred("./test-quote.png").unwrap();
+    let resized = quote.get_underlying_image()
+        .clone()
+        .resized(853, 480, ResizeAlgorithm::Hamming);
+    resized.encode(ImageFormat::WebP, &mut bytes).unwrap();
+    resized.save_inferred("./test-quote.webp").unwrap();
 
     Ok(bytes)
 }
@@ -298,8 +298,8 @@ fn fen_to_board_img(fen: &str, upscale_multiplier: u32, piece_images: &HashMap<c
     let new_width = (new_height as f32 * aspect_ratio).round() as u32;
     img.resize(new_width, new_height, ResizeAlgorithm::Nearest);
 
-    img.save_inferred("./test.png").unwrap();
-    img.encode(ImageFormat::Png, &mut bytes).unwrap();
+    img.save_inferred("./test.webp").unwrap();
+    img.encode(ImageFormat::WebP, &mut bytes).unwrap();
 
     bytes
 }

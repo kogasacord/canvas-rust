@@ -382,6 +382,7 @@ dependencies = [
 name = "canvas-http-api"
 version = "0.1.0"
 dependencies = [
+ "actix-utils",
  "actix-web",
  "awc",
  "env_logger",
