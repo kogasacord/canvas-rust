@@ -88,7 +88,7 @@ async fn main() -> std::io::Result<()> {
             .service(echo)
             .app_data(state.clone())
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind(("127.0.0.1", 4000))?
     .workers(4)
     .run()
     .await?;
