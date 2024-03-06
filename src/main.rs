@@ -1,12 +1,9 @@
-use std::{path::Path, cmp, collections::HashMap};
+use std::{path::Path, cmp, collections::HashMap, sync::{Arc, Mutex, RwLock}};
 
-use actix_web::{get, post, App, HttpResponse, HttpServer, Responder};
-use ril::{Image, Paste, TextAlign, Font, TextLayout, WrapStyle, TextSegment, Rgba, ResizeAlgorithm, OverlayMode};
-
-#[get("/ping")]
-async fn hello() -> impl Responder {
-    HttpResponse::Ok().body(Vec::<u8>::from([0x1f, 0x8b, 0x08, 0x00, 0xa2, 0x30, 0x10, 0x5c, 0x00, 0x03, 0xcb, 0x48, 0xcd, 0xc9, 0xc9]))
-}
+use awc::Client;
+use actix_web::{get, post, App, HttpResponse, HttpServer, Responder, web::{self, Bytes}};
+use ril::{Image, Paste, TextAlign, Font, TextLayout, WrapStyle, TextSegment, Rgba, ResizeAlgorithm, OverlayMode, ImageFormat};
+use serde::{Serialize, Deserialize};
 
 #[post("/echo")]
 async fn echo(req_body: String) -> impl Responder {
@@ -14,10 +11,63 @@ async fn echo(req_body: String) -> impl Responder {
         .body(req_body)
 }
 
+#[derive(Serialize, Deserialize)]
+struct QuoteFnParams {
+    author: String,
+    text: String,
+    png_url: String,
+}
+
+#[post("/quote_fn")]
+async fn quote_fn(data: web::Data<AppState>, req_body: web::Json<QuoteFnParams>) -> impl Responder {
+    let mut quote = data.quote.lock().unwrap();
+
+    let client = Client::default();
+    match client.get(&req_body.png_url).send().await {
+        Ok(mut bytes) => {
+            let bytes = bytes.body().await.unwrap();
+            if let Err(err) = quote.replace_pfp(bytes) {
+                return HttpResponse::BadRequest().body(err.to_string());
+            }
+        },
+        Err(err) => { 
+            return HttpResponse::BadRequest().body(err.to_string()) 
+        }
+    }
+
+    match create_quote(&mut quote, &req_body.text, &req_body.author) {
+        Ok(img) => {
+            HttpResponse::Ok()
+                .body(img)
+        },
+        Err(err) => {
+            HttpResponse::BadRequest()
+                .body(err.to_string())
+        }
+    }
+}
+
+struct AppState {
+    quote: Mutex<Quote>,
+    chess_assets: RwLock<(HashMap<char, Image<Rgba>>, Image<Rgba>)>
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let (pieces, board) = load_piece_board_images().unwrap();
-    fen_to_board_img("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1", "./test.png", 4, &pieces, &board);
+    let quote = Mutex::new(Quote::new("./media/images/gradient_path.png", "./media/images/profile.png").unwrap());
+    let chess_assets = RwLock::new(load_piece_board_images().unwrap());
+    let state = web::Data::new(Arc::new(AppState { quote, chess_assets }));
+
+    HttpServer::new(move || {
+        App::new()
+            .app_data(state.clone())
+    })
+    .bind(("127.0.0.1", 8080))?
+    .run()
+    .await?;
+
+    // let (pieces, board) = load_piece_board_images().unwrap();
+    // fen_to_board_img("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1", "./test.png", 4, &pieces, &board);
 
     Ok(())
 }
@@ -56,11 +106,9 @@ impl Quote {
             font 
         })
     }
-    fn replace_pfp(&mut self) {
-        // TODO: use actix-web client to get the image from the url
-        //      that will be passed to you by the caller
-        //      and convert that into bytes.
-        let pfp = Image::<Rgba>::from_bytes_inferred(bytes);
+    fn replace_pfp(&mut self, bytes: Bytes) -> ril::Result<()> {
+        self.image = Image::<Rgba>::from_bytes_inferred(bytes)?;
+        Ok(())
     }
     fn combine_pfp_and_gradient(&mut self) {
         self.image.draw(&Paste::new(&self.pfp)
@@ -106,8 +154,8 @@ fn create_quote(quote: &mut Quote, text: &str, author: &str) -> ril::Result<Vec<
     quote.get_underlying_image().draw(&text_layout);
     quote.get_underlying_image().draw(&author_layout);
 
-    quote.get_underlying_image().save_inferred("test.png")?;
-    // image.encode(ImageFormat::Png, &mut bytes).unwrap();
+    quote.get_underlying_image().encode(ImageFormat::Png, &mut bytes).unwrap();
+
     Ok(bytes)
 }
 fn load_piece_board_images() -> ril::Result<(HashMap<char, Image<Rgba>>, Image<Rgba>)> {
