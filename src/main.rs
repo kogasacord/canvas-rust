@@ -1,7 +1,7 @@
-use std::{path::Path, cmp, collections::HashMap, sync::{Arc, Mutex, RwLock}};
+use std::{path::Path, cmp, collections::HashMap, sync::{Arc, Mutex, RwLock}, f32::consts::E};
 
 use awc::Client;
-use actix_web::{get, post, App, HttpResponse, HttpServer, Responder, web::{self, Bytes}};
+use actix_web::{get, post, App, HttpResponse, HttpServer, Responder, web::{self, Bytes}, middleware, http::header::AcceptEncoding};
 use ril::{Image, Paste, TextAlign, Font, TextLayout, WrapStyle, TextSegment, Rgba, ResizeAlgorithm, OverlayMode, ImageFormat};
 use serde::{Serialize, Deserialize};
 
@@ -18,6 +18,11 @@ struct QuoteFnParams {
     png_url: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct ChessFnParams {
+    fen: String,
+}
+
 #[post("/quote_fn")]
 async fn quote_fn(data: web::Data<Arc<AppState>>, req_body: web::Json<QuoteFnParams>) -> impl Responder {
     let mut quote = data.quote.lock().unwrap();
@@ -25,8 +30,7 @@ async fn quote_fn(data: web::Data<Arc<AppState>>, req_body: web::Json<QuoteFnPar
     let client = Client::default();
     match client.get(&req_body.png_url).send().await {
         Ok(mut bytes) => {
-            // currently does NOT know how to encode the .body()
-            match bytes.body().await {
+            match bytes.body().limit(10_000_000).await {
                 Ok(bytes) => {
                     if let Err(err) = quote.replace_pfp(bytes) {
                         return HttpResponse::BadRequest().body(err.to_string());
@@ -45,6 +49,7 @@ async fn quote_fn(data: web::Data<Arc<AppState>>, req_body: web::Json<QuoteFnPar
     match create_quote(&mut quote, &req_body.text, &req_body.author) {
         Ok(img) => {
             HttpResponse::Ok()
+                .insert_header(AcceptEncoding(vec!["gzip".parse().unwrap()]))
                 .body(img)
         },
         Err(err) => {
@@ -53,6 +58,16 @@ async fn quote_fn(data: web::Data<Arc<AppState>>, req_body: web::Json<QuoteFnPar
         }
     }
 }
+
+#[post("/chess")]
+async fn chess_fn(data: web::Data<Arc<AppState>>, req_body: web::Json<ChessFnParams>) -> impl Responder {
+    let assets = data.chess_assets.read().unwrap();
+    let image_bytes = fen_to_board_img(&req_body.fen, 4, &assets.0, &assets.1);
+
+    HttpResponse::Ok()
+        .body(image_bytes)
+}
+
 
 struct AppState {
     quote: Mutex<Quote>,
@@ -69,7 +84,9 @@ async fn main() -> std::io::Result<()> {
     let state = web::Data::new(Arc::new(AppState { quote, chess_assets }));
     HttpServer::new(move || {
         App::new()
+            .wrap(middleware::Compress::default())
             .service(quote_fn)
+            .service(chess_fn)
             .service(echo)
             .app_data(state.clone())
     })
@@ -84,11 +101,11 @@ async fn main() -> std::io::Result<()> {
 }
 
 /**
- * https://www.desmos.com/calculator/4t4e16y73m
+ * https://www.desmos.com/calculator/uugepxxtlc
  */
 fn font_size_estimate(text: &str) -> f32 {
-    let constrained_len = cmp::max(cmp::min(text.len(), 130), 1);
-    -(constrained_len as f32 * 0.245) + 60.0
+    let constrained_len = cmp::max(cmp::min(text.len(), 280), 1);
+    -(constrained_len as f32 * 0.16) + 70.0
 }
 
 struct Quote {
@@ -118,7 +135,14 @@ impl Quote {
         })
     }
     fn replace_pfp(&mut self, bytes: Bytes) -> ril::Result<()> {
-        self.image = Image::<Rgba>::from_bytes_inferred(bytes)?;
+        let mut pfp = Image::<Rgba>::from_bytes_inferred(bytes)?;
+
+        let aspect_ratio = pfp.width() as f32 / pfp.height() as f32;
+        let new_height = self.image.height();
+        let new_width = (new_height as f32 * aspect_ratio).round() as u32;
+        pfp.resize(new_width, new_height, ResizeAlgorithm::Lanczos3);
+
+        self.pfp = pfp;
         Ok(())
     }
     fn combine_pfp_and_gradient(&mut self) {
@@ -155,10 +179,10 @@ fn create_quote(quote: &mut Quote, text: &str, author: &str) -> ril::Result<Vec<
         .with_wrap(WrapStyle::Word)
         .with_width(quote.get_underlying_image().width() / 5)
         .with_align(TextAlign::Right)
-        .with_position(x + 400, max_y)
+        .with_position(x + 450, max_y)
         .with_segment(
-            &TextSegment::<Rgba>::new(&font, format!("\n - {}", author), Rgba::white())
-                .with_size(24.0));
+            &TextSegment::<Rgba>::new(&font, format!("- {}", author), Rgba::white())
+                .with_size(27.0));
 
     quote.combine_pfp_and_gradient();
 
@@ -166,6 +190,7 @@ fn create_quote(quote: &mut Quote, text: &str, author: &str) -> ril::Result<Vec<
     quote.get_underlying_image().draw(&author_layout);
 
     quote.get_underlying_image().encode(ImageFormat::Png, &mut bytes).unwrap();
+    quote.get_underlying_image().save_inferred("./test-quote.png").unwrap();
 
     Ok(bytes)
 }
@@ -235,7 +260,9 @@ fn load_piece_board_images() -> ril::Result<(HashMap<char, Image<Rgba>>, Image<R
     Ok((piece_images, board_image))
 }
 
-fn fen_to_board_img(fen: &str, save_dir: &str, upscale_multiplier: u32, piece_images: &HashMap<char, Image<Rgba>>, board_image: &Image<Rgba>) {
+fn fen_to_board_img(fen: &str, upscale_multiplier: u32, piece_images: &HashMap<char, Image<Rgba>>, board_image: &Image<Rgba>) -> Vec<u8> {
+    let mut bytes = Vec::new();
+
     let board = fen.split_whitespace().next().unwrap();
     let mut img = board_image.clone();
     let square_size = (img.width() - 8) / 8; 
@@ -271,5 +298,8 @@ fn fen_to_board_img(fen: &str, save_dir: &str, upscale_multiplier: u32, piece_im
     let new_width = (new_height as f32 * aspect_ratio).round() as u32;
     img.resize(new_width, new_height, ResizeAlgorithm::Nearest);
 
-    img.save_inferred(save_dir).unwrap();
+    img.save_inferred("./test.png").unwrap();
+    img.encode(ImageFormat::Png, &mut bytes).unwrap();
+
+    bytes
 }
