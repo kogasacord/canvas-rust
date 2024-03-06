@@ -10,3 +10,4 @@ ril = { version = "0.10.1", features = ["all"] }
 awc = { version =  "3.4.0", features = ["rustls"] }
 serde = { version = "1.0.197", features = ["derive"] }
 actix-web = "4"
+env_logger = "0.10.0"

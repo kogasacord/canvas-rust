@@ -19,15 +19,22 @@ struct QuoteFnParams {
 }
 
 #[post("/quote_fn")]
-async fn quote_fn(data: web::Data<AppState>, req_body: web::Json<QuoteFnParams>) -> impl Responder {
+async fn quote_fn(data: web::Data<Arc<AppState>>, req_body: web::Json<QuoteFnParams>) -> impl Responder {
     let mut quote = data.quote.lock().unwrap();
 
     let client = Client::default();
     match client.get(&req_body.png_url).send().await {
         Ok(mut bytes) => {
-            let bytes = bytes.body().await.unwrap();
-            if let Err(err) = quote.replace_pfp(bytes) {
-                return HttpResponse::BadRequest().body(err.to_string());
+            // currently does NOT know how to encode the .body()
+            match bytes.body().await {
+                Ok(bytes) => {
+                    if let Err(err) = quote.replace_pfp(bytes) {
+                        return HttpResponse::BadRequest().body(err.to_string());
+                    }
+                },
+                Err(err) => {
+                    return HttpResponse::BadRequest().body(err.to_string());
+                }
             }
         },
         Err(err) => { 
@@ -54,12 +61,16 @@ struct AppState {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let quote = Mutex::new(Quote::new("./media/images/gradient_path.png", "./media/images/profile.png").unwrap());
+    std::env::set_var("RUST_LOG", "debug");
+    env_logger::init();
+
+    let quote = Mutex::new(Quote::new("./media/images/overlay_gradient.png", "./media/images/profile.png").unwrap());
     let chess_assets = RwLock::new(load_piece_board_images().unwrap());
     let state = web::Data::new(Arc::new(AppState { quote, chess_assets }));
-
     HttpServer::new(move || {
         App::new()
+            .service(quote_fn)
+            .service(echo)
             .app_data(state.clone())
     })
     .bind(("127.0.0.1", 8080))?
